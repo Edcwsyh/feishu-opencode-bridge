@@ -18,6 +18,8 @@ class Config:
     LOG_DIR: str = os.getenv("LOG_DIR", DEFAULT_LOG_DIR)
     OPENCODE_LOG_FILE: str = os.getenv("OPENCODE_LOG_FILE", "opencode.log")
     BRIDGE_LOG_FILE: str = os.getenv("BRIDGE_LOG_FILE", "bridge.log")
+    DEFAULT_AGENT: str = os.getenv("DEFAULT_AGENT", "")
+    WORKING_DIR: str = os.getenv("WORKING_DIR", "")
 
 
 config = Config()

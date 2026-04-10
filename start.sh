@@ -65,7 +65,12 @@ sleep 1
 
 # 启动 OpenCode Server
 echo -e "${GREEN}启动 OpenCode Server...${NC}"
-nohup opencode serve --port 4096 > "$OPENCODE_LOG" 2>&1 &
+OPENCODE_CMD="opencode serve --port 4096"
+if [ -n "$DEFAULT_AGENT" ]; then
+    OPENCODE_CMD="$OPENCODE_CMD --agent $DEFAULT_AGENT"
+    echo "使用 Agent: ${YELLOW}$DEFAULT_AGENT${NC}"
+fi
+nohup $OPENCODE_CMD > "$OPENCODE_LOG" 2>&1 &
 OPENCODE_PID=$!
 echo "OpenCode Server PID: $OPENCODE_PID"
 

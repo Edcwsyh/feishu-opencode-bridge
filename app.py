@@ -55,9 +55,16 @@ class OpenCodeClient:
         response = await self.client.get("/global/health")
         return {"data": response.json()}
     
-    async def create_session(self, title: str = None) -> Dict[str, Any]:
+    async def create_session(self, title: str = None, directory: str = None) -> Dict[str, Any]:
         body = {"title": title} if title else {}
-        response = await self.client.post("/session", json=body)
+        headers = {}
+        if directory:
+            headers["x-opencode-directory"] = directory
+        
+        if headers:
+            response = await self.client.post("/session", json=body, headers=headers)
+        else:
+            response = await self.client.post("/session", json=body)
         data = response.json()
         return {"id": data.get("id"), **data}
     
@@ -71,15 +78,21 @@ class SessionManager:
     def __init__(self):
         self._sessions: Dict[str, str] = {}
         self._opencode_client: Optional[OpenCodeClient] = None
+        self._working_dir: str = ""
     
-    async def initialize(self, opencode_client):
+    async def initialize(self, opencode_client, working_dir: str = ""):
         self._opencode_client = opencode_client
+        self._working_dir = working_dir
+        logger.info(f"SessionManager 初始化完成，工作目录: {working_dir or '未设置'}")
     
     async def get_or_create_session(self, user_id: str) -> str:
         if user_id in self._sessions:
             return self._sessions[user_id]
         
-        session = await self._opencode_client.create_session(title=f"Feishu-{user_id}")
+        session = await self._opencode_client.create_session(
+            title=f"Feishu-{user_id}",
+            directory=self._working_dir
+        )
         session_id = session.get("id")
         if not session_id:
             raise Exception(f"创建 session 失败: {session}")
@@ -444,7 +457,7 @@ async def startup():
     
     # 连接 OpenCode
     opencode_client = OpenCodeClient(config.OPENCODE_SERVER_URL, config.OPENCODE_SERVER_PASSWORD)
-    await session_manager.initialize(opencode_client)
+    await session_manager.initialize(opencode_client, config.WORKING_DIR)
     health = await opencode_client.health()
     logger.info(f"OpenCode 连接成功: {health}")
     
