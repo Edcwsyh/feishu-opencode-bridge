@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any
 
 import httpx
 import lark_oapi as lark
-from fastapi import FastAPI
+from fastapi import FastAPI, StreamingResponse
 from pydantic import BaseModel
 
 from config import config
@@ -69,8 +69,16 @@ class OpenCodeClient:
         data = response.json()
         return {"id": data.get("id"), **data}
     
-    async def send_message(self, session_id: str, message: str) -> Dict[str, Any]:
-        body = {"parts": [{"type": "text", "text": message}]}
+    async def send_message(self, session_id: str, message: str, image_url: str = None) -> Dict[str, Any]:
+        parts = [{"type": "text", "text": message}]
+        if image_url:
+            parts.append({
+                "type": "file",
+                "mime": "image/png",
+                "filename": "feishu_image.png",
+                "url": image_url
+            })
+        body = {"parts": parts}
         response = await self.client.post(f"/session/{session_id}/message", json=body)
         return response.json()
 
@@ -102,9 +110,9 @@ class SessionManager:
         logger.info(f"创建新 session: {session_id} for user: {user_id}")
         return session_id
     
-    async def send_message(self, user_id: str, message: str) -> str:
+    async def send_message(self, user_id: str, message: str, image_url: str = None) -> str:
         session_id = await self.get_or_create_session(user_id)
-        result = await self._opencode_client.send_message(session_id, message)
+        result = await self._opencode_client.send_message(session_id, message, image_url)
         
         # 从 parts 中提取文本内容
         parts = result.get("parts", [])
@@ -446,16 +454,16 @@ def extract_text_from_content(content: str, msg_type: str) -> str:
         return content
 
 
-async def process_message(user_id: str, text: str, message_id: str):
+async def process_message(user_id: str, text: str, message_id: str, image_url: str = None):
     """处理消息"""
     try:
-        logger.info(f"处理消息: user={user_id}, text={text[:50]}...")
+        logger.info(f"处理消息: user={user_id}, text={text[:50]}..., image_url={image_url}")
         
         # 发送处理中提示
         await feishu_client.send_reply(message_id, "🤔 正在思考...")
         
         # 发送到 OpenCode
-        response = await session_manager.send_message(user_id, text)
+        response = await session_manager.send_message(user_id, text, image_url)
         
         # 截断过长响应
         max_length = 4000
@@ -495,14 +503,16 @@ def handle_feishu_event(data: dict):
             content_obj = {"text": content}
         
         text = ""
+        image_url = None
         
         # 根据消息类型提取内容
         if msg_type == "text":
             text = content_obj.get("text", "").strip()
         elif msg_type == "image":
             image_key = content_obj.get("image_key", "")
-            text = f"[用户发送了一张图片: {image_key}]"
-            logger.info(f"收到图片消息, image_key: {image_key}")
+            text = "[用户发送了一张图片]"
+            image_url = f"http://localhost:{config.PORT}/image/{message_id}/{image_key}"
+            logger.info(f"收到图片消息, image_key: {image_key}, url: {image_url}")
         elif msg_type == "post":
             text = extract_text_from_content(content, msg_type)
             logger.info(f"收到富文本消息: {text[:100]}")
@@ -592,7 +602,7 @@ def handle_feishu_event(data: dict):
         # 使用线程池执行异步任务
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, process_message(user_id, full_text, message_id))
+            future = executor.submit(asyncio.run, process_message(user_id, full_text, message_id, image_url))
             try:
                 future.result(timeout=180)
             except Exception as e:
@@ -699,6 +709,21 @@ async def health():
         except:
             pass
     return {"status": "healthy" if ok else "degraded"}
+
+
+@app.get("/image/{message_id}/{image_key}")
+async def get_image(message_id: str, image_key: str):
+    """代理飞书图片请求"""
+    try:
+        image_data = get_message_resource_sync(message_id, image_key, "image")
+        return StreamingResponse(
+            iter([image_data]),
+            media_type="image/png",
+            headers={"Content-Disposition": f"inline; filename={image_key}.png"}
+        )
+    except Exception as e:
+        logger.error(f"获取图片失败: {e}")
+        return {"error": str(e)}, 500
 
 
 if __name__ == "__main__":
