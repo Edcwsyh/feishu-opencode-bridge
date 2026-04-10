@@ -505,6 +505,7 @@ def handle_feishu_event(data: dict):
         
         text = ""
         image_url = None
+        image_key = None
         
         # 根据消息类型提取内容
         if msg_type == "text":
@@ -512,8 +513,7 @@ def handle_feishu_event(data: dict):
         elif msg_type == "image":
             image_key = content_obj.get("image_key", "")
             text = "[用户发送了一张图片]"
-            image_url = f"http://localhost:{config.PORT}/image/{message_id}/{image_key}"
-            logger.info(f"收到图片消息, image_key: {image_key}, url: {image_url}")
+            logger.info(f"收到图片消息, image_key: {image_key}")
         elif msg_type == "post":
             text = extract_text_from_content(content, msg_type)
             logger.info(f"收到富文本消息: {text[:100]}")
@@ -528,6 +528,11 @@ def handle_feishu_event(data: dict):
         message_id = message.get("message_id", "")
         sender_type = sender.get("sender_type", "")
         create_time = message.get("create_time", 0)
+        
+        # 如果是图片消息，生成图片 URL
+        if image_key:
+            image_url = f"http://localhost:{config.PORT}/image/{message_id}/{image_key}"
+            logger.info(f"图片 URL: {image_url}")
         
         logger.info(f"消息详情 - message_id: {message_id}, msg_type: {msg_type}, parent_id: {parent_id}, content: {content[:100]}")
         
