@@ -63,6 +63,17 @@ pkill -f "python3 app.py" 2>/dev/null
 pkill -f "opencode serve" 2>/dev/null
 sleep 1
 
+# 切换到工作目录
+if [ -n "$WORKING_DIR" ]; then
+    WORKING_DIR=$(eval echo "$WORKING_DIR")
+    if [ -d "$WORKING_DIR" ]; then
+        cd "$WORKING_DIR"
+        echo -e "切换到工作目录: ${YELLOW}$WORKING_DIR${NC}"
+    else
+        echo -e "${RED}警告: 工作目录不存在: $WORKING_DIR${NC}"
+    fi
+fi
+
 # 启动 OpenCode Server
 echo -e "${GREEN}启动 OpenCode Server...${NC}"
 OPENCODE_CMD="opencode serve --port 4096"

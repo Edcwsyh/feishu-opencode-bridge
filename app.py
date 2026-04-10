@@ -60,6 +60,7 @@ class OpenCodeClient:
         headers = {}
         if directory:
             headers["x-opencode-directory"] = directory
+            logger.info(f"创建 session，使用工作目录: {directory}")
         
         if headers:
             response = await self.client.post("/session", json=body, headers=headers)
