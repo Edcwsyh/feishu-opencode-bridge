@@ -216,6 +216,32 @@ class FeishuClient:
             if data.get("code") == 0:
                 return data.get("data", {}).get("items", [{}])[0]
             raise Exception(f"获取消息失败: {data}")
+    
+    async def get_message_resource(self, message_id: str, file_key: str, resource_type: str) -> bytes:
+        """下载消息资源（图片、文件等）"""
+        token = await self.get_token()
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type={resource_type}"
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            if response.status_code == 200:
+                return response.content
+            raise Exception(f"下载资源失败: {response.status_code}")
+    
+    async def get_sub_messages(self, message_id: str) -> list:
+        """获取合并转发消息的子消息列表"""
+        token = await self.get_token()
+        url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/replies"
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            data = response.json()
+            if data.get("code") == 0:
+                return data.get("data", {}).get("items", [])
+            logger.warning(f"获取子消息失败: {data}")
+            return []
 
 
 async def get_message_content(message_id: str) -> str:
@@ -329,6 +355,97 @@ def get_message_detail(message_id: str) -> dict:
         return {}
 
 
+def get_message_resource_sync(message_id: str, file_key: str, resource_type: str) -> bytes:
+    """同步下载消息资源"""
+    import requests
+    token = feishu_client._token
+    if not token:
+        resp = requests.post(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": config.FEISHU_APP_ID, "app_secret": config.FEISHU_APP_SECRET},
+            timeout=10
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            token = data["tenant_access_token"]
+    
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type={resource_type}"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    if resp.status_code == 200:
+        return resp.content
+    raise Exception(f"下载资源失败: {resp.status_code}")
+
+
+def get_merge_forward_sub_messages(message_id: str) -> list:
+    """获取合并转发消息的子消息"""
+    import requests
+    token = feishu_client._token
+    if not token:
+        resp = requests.post(
+            "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+            json={"app_id": config.FEISHU_APP_ID, "app_secret": config.FEISHU_APP_SECRET},
+            timeout=10
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            token = data["tenant_access_token"]
+    
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
+    
+    try:
+        data = resp.json()
+        if data.get("code") == 0:
+            items = data.get("data", {}).get("items", [])
+            # 过滤掉合并转发消息本身，只返回子消息
+            sub_messages = [item for item in items if item.get("upper_message_id") == message_id]
+            logger.info(f"获取到 {len(sub_messages)} 条子消息")
+            return sub_messages
+        logger.warning(f"获取子消息失败: {data}")
+    except Exception as e:
+        logger.warning(f"解析子消息失败: {e}")
+    return []
+
+
+def extract_text_from_content(content: str, msg_type: str) -> str:
+    """从消息 content 中提取文本内容"""
+    try:
+        content_obj = json.loads(content)
+    except:
+        return content
+    
+    if msg_type == "text":
+        return content_obj.get("text", "")
+    elif msg_type == "post":
+        texts = []
+        title = content_obj.get("title", "")
+        if title:
+            texts.append(title)
+        for section in content_obj.get("content", []):
+            for item in section:
+                if item.get("tag") == "text":
+                    texts.append(item.get("text", ""))
+                elif item.get("tag") == "at":
+                    texts.append(f"@{item.get('user_name', '某人')} ")
+        return "\n".join(texts)
+    elif msg_type == "image":
+        return f"[图片: {content_obj.get('image_key', '')}]"
+    elif msg_type == "file":
+        return f"[文件: {content_obj.get('file_name', content_obj.get('file_key', ''))}]"
+    elif msg_type == "media":
+        return f"[视频: {content_obj.get('file_key', '')}]"
+    elif msg_type == "audio":
+        return "[语音消息]"
+    elif msg_type == "sticker":
+        return "[表情包]"
+    elif msg_type == "share_chat":
+        return "[分享群名片]"
+    elif msg_type == "share_user":
+        return "[分享个人名片]"
+    else:
+        return content
+
+
 async def process_message(user_id: str, text: str, message_id: str):
     """处理消息"""
     try:
@@ -367,6 +484,8 @@ def handle_feishu_event(data: dict):
         sender = event.get("sender", {})
         
         content = message.get("content", "{}")
+        msg_type = message.get("msg_type", "text")
+        
         # 尝试从多个位置获取 parent_id
         parent_id = message.get("parent_id") or data.get("event", {}).get("message", {}).get("parent_id") or ""
         
@@ -375,14 +494,31 @@ def handle_feishu_event(data: dict):
         except:
             content_obj = {"text": content}
         
-        text = content_obj.get("text", "").strip()
+        text = ""
+        
+        # 根据消息类型提取内容
+        if msg_type == "text":
+            text = content_obj.get("text", "").strip()
+        elif msg_type == "image":
+            image_key = content_obj.get("image_key", "")
+            text = f"[用户发送了一张图片: {image_key}]"
+            logger.info(f"收到图片消息, image_key: {image_key}")
+        elif msg_type == "post":
+            text = extract_text_from_content(content, msg_type)
+            logger.info(f"收到富文本消息: {text[:100]}")
+        elif msg_type in ("file", "media", "audio", "sticker", "share_chat", "share_user"):
+            text = extract_text_from_content(content, msg_type)
+            logger.info(f"收到 {msg_type} 消息")
+        else:
+            text = content.strip()
+            logger.info(f"收到未知类型消息: {msg_type}")
         
         user_id = sender.get("sender_id", {}).get("open_id", "")
         message_id = message.get("message_id", "")
         sender_type = sender.get("sender_type", "")
         create_time = message.get("create_time", 0)
         
-        logger.info(f"消息详情 - message_id: {message_id}, parent_id: {parent_id}, root_id: {message.get('root_id')}, content: {content[:100]}")
+        logger.info(f"消息详情 - message_id: {message_id}, msg_type: {msg_type}, parent_id: {parent_id}, content: {content[:100]}")
         
         # 如果没有 parent_id，通过 API 查询消息详情获取
         actual_parent_id = parent_id
@@ -417,11 +553,32 @@ def handle_feishu_event(data: dict):
             logger.info(f"忽略历史消息: {message_id}")
             return
         
-        logger.info(f"收到消息 - user: {user_id}, text: {text[:50]}, type: {sender_type}")
+        logger.info(f"收到消息 - user: {user_id}, text: {text[:50] if text else '[非文本消息]'}, msg_type: {msg_type}, type: {sender_type}")
         
-        # 忽略空消息或机器人消息
-        if not text or sender_type == "bot":
+        # 忽略机器人消息
+        if sender_type == "bot":
             return
+        
+        # 处理合并转发消息 - 获取子消息内容
+        if msg_type == "merge_forward":
+            logger.info(f"处理合并转发消息: {message_id}")
+            sub_messages = get_merge_forward_sub_messages(message_id)
+            if sub_messages:
+                texts = []
+                for sub_msg in sub_messages:
+                    sub_content = sub_msg.get("body", {}).get("content", "")
+                    sub_msg_type = sub_msg.get("msg_type", "text")
+                    sub_text = extract_text_from_content(sub_content, sub_msg_type)
+                    if sub_text:
+                        texts.append(sub_text)
+                if texts:
+                    text = "[合并转发消息]:\n" + "\n---\n".join(texts)
+                    logger.info(f"获取到 {len(texts)} 条子消息")
+                else:
+                    text = "[合并转发消息，但未能获取到子消息内容]"
+            else:
+                text = "[合并转发消息，但无法获取子消息]"
+            logger.info(f"合并转发消息内容: {text[:100]}")
         
         # 标记消息为已处理并保存
         processed_messages.add(message_id)

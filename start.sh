@@ -97,6 +97,9 @@ fi
 
 echo -e "${GREEN}OpenCode Server 启动成功${NC}"
 
+# 返回脚本目录（启动桥接服务需要）
+cd "$SCRIPT_DIR"
+
 # 启动桥接服务
 echo ""
 echo -e "${GREEN}启动飞书桥接服务...${NC}"
