@@ -5,6 +5,16 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 加载配置
+source .env 2>/dev/null
+
+# 默认日志目录
+LOG_DIR="${LOG_DIR:-/tmp/$USER/feishu-opencode-bridge}"
+mkdir -p "$LOG_DIR"
+
+OPENCODE_LOG="$LOG_DIR/opencode.log"
+BRIDGE_LOG="$LOG_DIR/bridge.log"
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,6 +26,8 @@ echo ""
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}  飞书 OpenCode 桥接服务${NC}"
 echo -e "${BLUE}========================================${NC}"
+echo ""
+echo -e "日志目录: ${YELLOW}$LOG_DIR${NC}"
 echo ""
 
 # 检查 .env 文件
@@ -53,7 +65,7 @@ sleep 1
 
 # 启动 OpenCode Server
 echo -e "${GREEN}启动 OpenCode Server...${NC}"
-nohup opencode serve --port 4096 > /tmp/opencode.log 2>&1 &
+nohup opencode serve --port 4096 > "$OPENCODE_LOG" 2>&1 &
 OPENCODE_PID=$!
 echo "OpenCode Server PID: $OPENCODE_PID"
 
@@ -63,7 +75,7 @@ sleep 3
 # 检查 OpenCode Server 是否启动成功
 if ! curl -s http://localhost:4096/global/health > /dev/null 2>&1; then
     echo -e "${RED}OpenCode Server 启动失败${NC}"
-    echo "查看日志: tail -f /tmp/opencode.log"
+    echo "查看日志: ${YELLOW}tail -f $OPENCODE_LOG${NC}"
     exit 1
 fi
 
@@ -72,7 +84,7 @@ echo -e "${GREEN}OpenCode Server 启动成功${NC}"
 # 启动桥接服务
 echo ""
 echo -e "${GREEN}启动飞书桥接服务...${NC}"
-nohup python3 app.py > /tmp/bridge.log 2>&1 &
+nohup python3 app.py > "$BRIDGE_LOG" 2>&1 &
 BRIDGE_PID=$!
 echo "桥接服务 PID: $BRIDGE_PID"
 
@@ -82,7 +94,7 @@ sleep 3
 # 检查桥接服务是否启动成功
 if ! curl -s http://localhost:8080/health > /dev/null 2>&1; then
     echo -e "${RED}桥接服务启动失败${NC}"
-    echo "查看日志: tail -f /tmp/bridge.log"
+    echo "查看日志: ${YELLOW}tail -f $BRIDGE_LOG${NC}"
     exit 1
 fi
 
@@ -95,8 +107,8 @@ echo -e "OpenCode Server: ${BLUE}http://localhost:4096${NC}"
 echo -e "桥接服务:         ${BLUE}http://localhost:8080${NC}"
 echo ""
 echo -e "查看日志:"
-echo -e "  OpenCode: ${YELLOW}tail -f /tmp/opencode.log${NC}"
-echo -e "  桥接服务: ${YELLOW}tail -f /tmp/bridge.log${NC}"
+echo -e "  OpenCode: ${YELLOW}tail -f $OPENCODE_LOG${NC}"
+echo -e "  桥接服务: ${YELLOW}tail -f $BRIDGE_LOG${NC}"
 echo ""
 echo -e "停止服务: ${YELLOW}pkill -f \"opencode serve\" && pkill -f \"python3 app.py\"${NC}"
 echo ""

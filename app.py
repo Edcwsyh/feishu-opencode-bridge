@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -13,10 +14,16 @@ from pydantic import BaseModel
 
 from config import config
 
+os.makedirs(config.LOG_DIR, exist_ok=True)
+log_file = os.path.join(config.LOG_DIR, config.BRIDGE_LOG_FILE)
+
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(log_file, encoding="utf-8")
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -212,6 +219,102 @@ async def get_message_content(message_id: str) -> str:
         return ""
 
 
+def get_message_content_sync(message_id: str) -> str:
+    """同步获取消息内容"""
+    try:
+        import requests
+        # 获取 token
+        token = feishu_client._token
+        if not token:
+            resp = requests.post(
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": config.FEISHU_APP_ID, "app_secret": config.FEISHU_APP_SECRET},
+                timeout=10
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                token = data["tenant_access_token"]
+        
+        resp = requests.get(
+            f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            items = data.get("data", {}).get("items", [])
+            if items:
+                content = items[0].get("body", {}).get("content", "")
+                try:
+                    content_obj = json.loads(content)
+                    return content_obj.get("text", content)
+                except:
+                    return content
+        return ""
+    except Exception as e:
+        logger.warning(f"获取消息 {message_id} 失败: {e}")
+        return ""
+
+
+async def get_message_detail_async(message_id: str) -> dict:
+    """通过 API 查询消息详情，获取 parent_id 等信息"""
+    try:
+        msg = await feishu_client.get_message(message_id)
+        return {
+            "parent_id": msg.get("parent_id", ""),
+            "root_id": msg.get("root_id", ""),
+            "content": msg.get("body", {}).get("content", "")
+        }
+    except Exception as e:
+        logger.warning(f"查询消息详情 {message_id} 失败: {e}")
+        return {}
+
+
+def get_message_detail(message_id: str) -> dict:
+    """同步获取消息详情"""
+    import urllib.request
+    import urllib.error
+    
+    try:
+        # 获取 token
+        token = feishu_client._token
+        if not token:
+            # 同步获取 token
+            import requests
+            resp = requests.post(
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": config.FEISHU_APP_ID, "app_secret": config.FEISHU_APP_SECRET},
+                timeout=10
+            )
+            data = resp.json()
+            if data.get("code") == 0:
+                token = data["tenant_access_token"]
+            else:
+                return {}
+        
+        # 获取消息详情
+        import requests
+        resp = requests.get(
+            f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10
+        )
+        data = resp.json()
+        if data.get("code") == 0:
+            items = data.get("data", {}).get("items", [])
+            if items:
+                msg = items[0]
+                return {
+                    "parent_id": msg.get("parent_id", ""),
+                    "root_id": msg.get("root_id", ""),
+                    "content": msg.get("body", {}).get("content", "")
+                }
+        return {}
+    except Exception as e:
+        logger.warning(f"查询消息详情 {message_id} 失败: {e}")
+        return {}
+
+
 async def process_message(user_id: str, text: str, message_id: str):
     """处理消息"""
     try:
@@ -243,12 +346,15 @@ async def process_message(user_id: str, text: str, message_id: str):
 def handle_feishu_event(data: dict):
     """处理飞书事件（长连接回调）"""
     try:
+        logger.info(f"完整事件数据: {json.dumps(data, ensure_ascii=False)[:500]}")
+        
         event = data.get("event", {})
         message = event.get("message", {})
         sender = event.get("sender", {})
         
         content = message.get("content", "{}")
-        parent_id = message.get("parent_id", "")  # 被回复的消息 ID
+        # 尝试从多个位置获取 parent_id
+        parent_id = message.get("parent_id") or data.get("event", {}).get("message", {}).get("parent_id") or ""
         
         try:
             content_obj = json.loads(content)
@@ -262,12 +368,24 @@ def handle_feishu_event(data: dict):
         sender_type = sender.get("sender_type", "")
         create_time = message.get("create_time", 0)
         
+        logger.info(f"消息详情 - message_id: {message_id}, parent_id: {parent_id}, root_id: {message.get('root_id')}, content: {content[:100]}")
+        
+        # 如果没有 parent_id，通过 API 查询消息详情获取
+        actual_parent_id = parent_id
+        if not actual_parent_id:
+            try:
+                msg_detail = get_message_detail(message_id)
+                actual_parent_id = msg_detail.get("parent_id", "")
+                logger.info(f"通过 API 查询到 parent_id: {actual_parent_id}")
+            except Exception as e:
+                logger.warning(f"查询消息详情失败: {e}")
+        
         # 如果是引用回复，获取被引用消息的内容
         quoted_text = ""
-        if parent_id:
+        if actual_parent_id:
+            logger.info(f"检测到引用消息, parent_id: {actual_parent_id}")
             try:
-                # 在新事件循环中获取引用消息
-                quoted_text = asyncio.run(get_message_content(parent_id))
+                quoted_text = get_message_content_sync(actual_parent_id)
                 if quoted_text:
                     quoted_text = f"\n\n[引用消息]: {quoted_text}"
                     logger.info(f"获取到引用消息: {quoted_text[:100]}...")
