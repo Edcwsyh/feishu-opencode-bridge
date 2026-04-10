@@ -9,7 +9,8 @@ from typing import Optional, Dict, Any
 
 import httpx
 import lark_oapi as lark
-from fastapi import FastAPI, StreamingResponse
+from fastapi import FastAPI
+from starlette.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import config
